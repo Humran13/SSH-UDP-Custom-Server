@@ -1,0 +1,35 @@
+name: Release
+
+# Publishes a release ONLY when the tag matches VERSION and the unit tests pass.
+# (The full integration matrix runs in CI on every push to main; tag only after it is green.)
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag must match VERSION
+        run: |
+          v="$(tr -d '[:space:]' < VERSION)"
+          [ "${GITHUB_REF_NAME}" = "v${v}" ] || { echo "tag ${GITHUB_REF_NAME} != VERSION v${v}"; exit 1; }
+          grep -q "^## \[${v}\]" CHANGELOG.md || { echo "CHANGELOG has no entry for ${v}"; exit 1; }
+      - name: Unit tests
+        run: |
+          sudo bash tests/install-bats.sh
+          bats tests/unit
+      - name: Build archive + checksums
+        run: bash scripts/build-release.sh dist
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          v="$(tr -d '[:space:]' < VERSION)"
+          awk -v v="$v" '$0 ~ "^## \\["v"\\]" { f = 1; next } /^## \[/ { f = 0 } f' CHANGELOG.md > notes.md
+          gh release create "v${v}" dist/ssh-udp-custom-server-v${v}.tar.gz dist/SHA256SUMS dist/VERSION \
+            --title "v${v}" --notes-file notes.md --verify-tag

@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: ShellCheck + syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: ShellCheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck --version
+          shellcheck -x bin/sshudp install.sh uninstall.sh scripts/*.sh lib/*.sh tests/install-bats.sh tests/run-matrix.sh tests/integration/*.sh
+      - name: bash -n
+        run: for f in bin/sshudp install.sh uninstall.sh lib/*.sh scripts/*.sh; do bash -n "$f"; done
+      - name: No forbidden patterns
+        run: |
+          ! grep -RInE 'curl +(-[a-zA-Z]*k|--insecure)|wget +--no-check-certificate|chmod +(-R +)?777|iptables +-F|nft +flush +ruleset|ufw +(disable|reset)' bin lib install.sh uninstall.sh scripts systemd \
+            | grep -v '^\S*:[0-9]*:\s*#' || { echo "forbidden pattern found"; exit 1; }
+          ! grep -RInE '(^|[^a-zA-Z_])eval ' bin lib install.sh scripts || { echo "eval found"; exit 1; }
+
+  security:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  unit:
+    name: Unit tests (Bats)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run
+        run: |
+          sudo bash tests/install-bats.sh
+          bats --tap tests/unit | tee unit.tap
+          ! grep -q '^not ok' unit.tap
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: unit-tap, path: unit.tap }
+
+  build-hy-client:
+    name: Build reference Hysteria v1 client (test fixture)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: bash tests/fixtures/build-hy-client.sh
+      - uses: actions/upload-artifact@v4
+        with: { name: hy-client, path: tests/fixtures/hy-client }
+
+  integration-containers:
+    name: Integration (Ubuntu ${{ matrix.ubuntu }}, systemd container)
+    needs: [build-hy-client]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu: ["20.04", "22.04", "24.04", "26.04"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: hy-client, path: tests/fixtures }
+      - name: Run suite in a systemd Ubuntu ${{ matrix.ubuntu }} container
+        run: |
+          chmod +x tests/fixtures/hy-client
+          BATS_ARGS="tests/unit tests/integration" bash tests/run-matrix.sh "${{ matrix.ubuntu }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tap-ubuntu-${{ matrix.ubuntu }}
+          path: tests/results/*.tap
+
+  integration-vm:
+    name: Integration (native ${{ matrix.os }} VM)
+    needs: [build-hy-client]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: hy-client, path: tests/fixtures }
+      - name: Run the integration suite directly on the VM (real systemd/sshd/firewall)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends openssh-server sshpass ufw nftables iptables python3 openssl curl iproute2
+          sudo systemctl mask nftables.service >/dev/null 2>&1 || true
+          sudo mkdir -p /src && sudo cp -a . /src
+          sudo chmod +x /src/tests/fixtures/hy-client
+          sudo bash /src/tests/integration/entrypoint.sh tests/integration | tee vm.tap
+          ! grep -q '^not ok' vm.tap
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tap-vm-${{ matrix.os }}
+          path: vm.tap
+
+  package:
+    name: Release archive builds reproducibly
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          bash scripts/build-release.sh dist1 >/dev/null
+          bash scripts/build-release.sh dist2 >/dev/null
+          cmp dist1/*.tar.gz dist2/*.tar.gz
+          cat dist1/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with: { name: release-archive, path: dist1 }

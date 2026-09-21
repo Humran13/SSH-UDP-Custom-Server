@@ -1,0 +1,36 @@
+name: Public installer (GitHub RAW)
+
+# Tests what YouTube viewers will actually run: the EXACT public one-liner, downloaded
+# from raw.githubusercontent.com (not a local file), on real Ubuntu VMs.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  raw-install:
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Installer hash on GitHub RAW equals the repository file
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/Humran13/SSH-UDP-Custom-Server/main/install.sh -o /tmp/raw-install.sh
+          echo "raw : $(sha256sum /tmp/raw-install.sh | cut -d' ' -f1)"
+          echo "repo: $(sha256sum install.sh | cut -d' ' -f1)"
+      - name: Run the public one-liner and the full checklist
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+          sudo bash tests/public-install-test.sh
