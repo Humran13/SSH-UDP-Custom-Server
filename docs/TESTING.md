@@ -126,4 +126,25 @@ See [CLIENT-SETUP.md](CLIENT-SETUP.md#manual-android-test). One connection from 
 
 ## Public installer test (GitHub RAW)
 
-PUBLIC_PLACEHOLDER
+Validated after the v1.0.0 release was published, using the exact user command
+(`curl -fsSL https://raw.githubusercontent.com/Humran13/SSH-UDP-Custom-Server/main/install.sh | sudo bash`),
+not a local file, by `tests/public-install-test.sh`:
+
+* **Hash check:** SHA-256 of `install.sh` downloaded from GitHub RAW =
+  `69c41696635c7b84fb90d1f3be72cb4fbc9590373574f470352a8b4274fd0e83` = SHA-256 of the file in the
+  repository (identical).
+* **Ubuntu 20.04, 22.04, 24.04, 26.04 (clean containers):** 30/30 checks pass on each: RAW hash,
+  installer exit code and success message, installed version = repository `VERSION`, `status`,
+  UDP service + port, `sshd_config` untouched, pre-existing admin SSH login still works, `doctor`
+  (0 failed), user creation, tunnel login + forward + SHA-256 of 1.5 MB, no shell, expiry service
+  locks the expired user and only that user, renew, `update --check` against real GitHub, `repair`
+  after damage, backup, restore, `doctor` after restore, uninstall (admin/OpenSSH preserved, services
+  and firewall table gone), reinstall with the public one-liner, `doctor` again.
+* **GitHub-hosted VMs (`ubuntu-22.04`, `ubuntu-24.04`):** the same workflow
+  (`.github/workflows/public-install.yml`) passed (run 35668056141).
+* **CI for the release commit:** all jobs green - ShellCheck, secret scan, 206 unit tests, the
+  integration suite in Ubuntu 20.04/22.04/24.04/26.04 systemd containers and on native
+  22.04/24.04 VMs, reproducible release archive (run 35667182495).
+
+The update path was tested with mock releases (upgrade, tamper, rollback); against real GitHub only
+`update --check` ("already up to date") is possible while v1.0.0 is the only release.
