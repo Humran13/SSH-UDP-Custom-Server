@@ -1,0 +1,43 @@
+[Unit]
+Description=SSH UDP Custom transport (upstream udp-custom core)
+Documentation=https://github.com/Humran13/SSH-UDP-Custom-Server
+After=network-online.target ssh-udp-custom-firewall.service
+Wants=network-online.target ssh-udp-custom-firewall.service
+StartLimitIntervalSec=120
+StartLimitBurst=10
+ConditionPathExists=@CONF@/udp-custom.json
+
+[Service]
+Type=simple
+User=@RUN_USER@
+Group=@RUN_GROUP@
+SupplementaryGroups=@SUPP_GROUPS@
+RuntimeDirectory=ssh-udp-custom
+WorkingDirectory=/run/ssh-udp-custom
+ExecStart=@LIB@/core/udp-custom server --config @CONF@/udp-custom.json
+Restart=on-failure
+RestartSec=2
+LimitNOFILE=65536
+TasksMax=512
+
+# Hardening. The upstream core tries to edit iptables and sysctl on its own
+# when it is root; none of that is needed (the manager owns the firewall), so
+# it gets no capabilities, a read-only system and a minimal network stack.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

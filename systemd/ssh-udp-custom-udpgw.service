@@ -1,0 +1,25 @@
+[Unit]
+Description=BadVPN UDPGW for SSH UDP Custom (optional, loopback only)
+Documentation=https://github.com/Humran13/SSH-UDP-Custom-Server
+After=network.target
+
+[Service]
+Type=simple
+User=@UDPGW_USER@
+ExecStart=@LIB@/udpgw/badvpn-udpgw --listen-addr 127.0.0.1:@UDPGW_PORT@ --max-clients 500 --max-connections-for-client 10
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

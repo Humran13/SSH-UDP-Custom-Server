@@ -1,0 +1,17 @@
+[Unit]
+Description=SSH UDP Custom firewall redirect rules (project-owned rules only)
+Documentation=https://github.com/Humran13/SSH-UDP-Custom-Server
+After=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=@LIB@/bin/sshudp fw-apply
+ExecStop=@LIB@/bin/sshudp fw-remove
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

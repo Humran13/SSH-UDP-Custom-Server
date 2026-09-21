@@ -1,0 +1,10 @@
+[Unit]
+Description=SSH UDP Custom: enforce per-user simultaneous session limits
+Documentation=https://github.com/Humran13/SSH-UDP-Custom-Server
+
+[Service]
+Type=oneshot
+ExecStart=@LIB@/bin/sshudp enforce-limits
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes

@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily check for expired SSH UDP Custom accounts
+
+[Timer]
+OnCalendar=daily
+OnBootSec=3min
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

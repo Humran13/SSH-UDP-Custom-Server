@@ -1,0 +1,10 @@
+[Unit]
+Description=SSH UDP Custom: lock expired tunnel accounts
+Documentation=https://github.com/Humran13/SSH-UDP-Custom-Server
+
+[Service]
+Type=oneshot
+ExecStart=@LIB@/bin/sshudp cleanup-expired --quiet
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes

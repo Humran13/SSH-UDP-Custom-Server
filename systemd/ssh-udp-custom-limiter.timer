@@ -1,0 +1,10 @@
+[Unit]
+Description=Per-minute session limit check (SSH UDP Custom)
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=60s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
