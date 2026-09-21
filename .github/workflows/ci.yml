@@ -17,9 +17,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: ShellCheck
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
-          shellcheck --version
-          shellcheck -x bin/sshudp install.sh uninstall.sh scripts/*.sh lib/*.sh tests/install-bats.sh tests/run-matrix.sh tests/integration/*.sh
+          docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:stable --version
+          docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:stable -x \
+            bin/sshudp install.sh uninstall.sh scripts/*.sh lib/*.sh \
+            tests/install-bats.sh tests/run-matrix.sh tests/public-install-test.sh \
+            tests/fixtures/build-hy-client.sh tests/integration/*.sh
       - name: bash -n
         run: for f in bin/sshudp install.sh uninstall.sh lib/*.sh scripts/*.sh; do bash -n "$f"; done
       - name: No forbidden patterns
@@ -35,10 +37,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: gitleaks (working tree and full history)
+        run: docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest detect --source /repo --no-banner --redact -v
 
   unit:
     name: Unit tests (Bats)

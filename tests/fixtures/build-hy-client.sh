@@ -12,7 +12,7 @@ fi
 if [[ ! -x hy-client ]]; then
   docker run --rm -v "$PWD:/out" golang:1.20 bash -c '
     set -e; git clone -q --depth 1 --branch v1.3.5 https://github.com/apernet/hysteria.git /h
-    cd /h/app && CGO_ENABLED=0 go build -o /out/hy-client ./cmd'
+    cd /h/app && CGO_ENABLED=0 go build -o /out/hy-client ./cmd && chmod 755 /out/hy-client'
 fi
-chmod +x hy-client
+chmod +x hy-client 2>/dev/null || true
 ls -l hy-client

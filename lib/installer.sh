@@ -169,7 +169,7 @@ installer_main() { # installer_main [--quick|--advanced] [--yes]
   if [[ -z "$mode" ]]; then
     if [[ -t 0 || -r /dev/tty ]]; then
       echo
-      echo "${C_BLD}SSH UDP Custom Server${C_RST}  v$(cat "$SSHUDP_LIB_HOME/../VERSION" 2>/dev/null | tr -d '[:space:]')"
+      echo "${C_BLD}SSH UDP Custom Server${C_RST}  v$(tr -d "[:space:]" <"$SSHUDP_LIB_HOME/../VERSION" 2>/dev/null)"
       echo " 1. Quick Install (recommended)"
       echo " 2. Advanced Install"
       echo " 3. Exit"
