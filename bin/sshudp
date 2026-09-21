@@ -1,0 +1,272 @@
+#!/usr/bin/env bash
+# sshudp - SSH UDP Custom Server Manager (command line + interactive dashboard)
+# https://github.com/Humran13/SSH-UDP-Custom-Server
+set -Euo pipefail
+
+_self="$(readlink -f "${BASH_SOURCE[0]}")"
+SSHUDP_LIB_HOME="$(cd "$(dirname "$_self")/../lib" && pwd)"
+export SSHUDP_LIB_HOME
+
+# shellcheck source=lib/common.sh
+for _m in common validate config platform core firewall service users monitor client doctor backup update repair uninstall extras installer ui; do
+  # shellcheck disable=SC1090
+  source "$SSHUDP_LIB_HOME/$_m.sh"
+done
+unset _m _self
+
+usage() {
+  cat <<EOF
+${C_BLD}sshudp${C_RST} $(sshudp_version) - SSH UDP Custom Server Manager
+
+Usage: sshudp [command] [options]
+
+  (no command)            open the interactive manager
+  status                  service and account overview
+  doctor [--quick]        run diagnostics (read-only)
+  users [text]            list managed users (optionally filtered)
+  online                  show connected managed users
+  traffic                 service-level traffic counters and sessions
+
+  create-user [NAME] [--days N | --expires YYYY-MM-DD] [--generate |
+              --password-stdin] [--limit N]
+  delete-user NAME [--yes]
+  renew-user NAME [DAYS | YYYY-MM-DD]
+  lock-user NAME | unlock-user NAME
+  reset-password NAME [--generate | --password-stdin]
+  user-info NAME
+  cleanup-expired [--delete]
+  client NAME             account card / client setup for a user
+
+  config [show]           show settings
+  config server-host HOST|-      config server-ip IP|auto
+  config ssh-port N              config udp-port N
+  config udp-ports SPEC          config udp-exclude SPEC|none
+  config default-maxlogins N     config run-as sshudp|root
+  config firewall-mode auto|nft|iptables|none
+
+  start | stop | restart  the UDP service only
+  logs [udp|expiry|events|all] [-n N] [-f]
+  fw [status|apply|remove]
+  udpgw enable [PORT] | disable | status      (optional)
+  fail2ban enable | disable | status          (optional)
+
+  backup [--with-hashes] | backups | restore FILE
+  update [--check] [--version X.Y.Z] [--yes]
+  core-update             re-fetch/verify the pinned upstream core
+  repair
+  uninstall [--yes] [--remove-users|--keep-users] [--purge|--keep-config]
+  version | help
+EOF
+}
+
+# ------------------------------------------------------------------ status --
+cmd_status() {
+  local sn
+  sn="$(sshd_service_name)"
+  echo "${C_BLD}SSH UDP Custom${C_RST} v$(sshudp_version)   core v$(core_installed_version)"
+  printf '  UDP service : %s\n' "$(svc_state "$SVC_UDP")"
+  printf '  SSH service : %s\n' "$(svc_state "$sn")"
+  printf '  Listen      : %s/udp   Range: %s\n' "$(cfg_get UDP_LISTEN_PORT)" "$(cfg_get UDP_PORTS)"
+  printf '  SSH port    : %s\n' "$(cfg_get SSH_PORT)"
+  printf '  Firewall    : backend=%s rules=%s\n' "$(fw_state_get BACKEND '?')" "$(fw_rules_present && echo present || echo MISSING)"
+  printf '  Users       : %s (expired: %s, online: %s)\n' "$(count_users)" "$(count_expired)" "$(online_users_count)"
+  printf '  Timers      : expiry=%s limiter=%s\n' "$(svc_state "$SVC_EXPIRY.timer")" "$(svc_state "$SVC_LIMITER.timer")"
+}
+
+# ------------------------------------------------------------------ config --
+cmd_config() {
+  local key="${1:-show}" val="${2:-}"
+  case "$key" in
+    show)
+      local k
+      for k in SERVER_HOST SERVER_IP SSH_PORT UDP_LISTEN_PORT UDP_PORTS UDP_EXCLUDE RUN_AS \
+        FIREWALL_MODE UDPGW_ENABLED UDPGW_PORT DEFAULT_MAXLOGINS STREAM_BUFFER RECEIVE_BUFFER; do
+        printf '  %-18s %s\n' "$k" "$(cfg_get "$k")"
+      done
+      ;;
+    server-host)
+      need_root; lock_acquire
+      [[ "$val" == "-" || "$val" == "none" ]] && val=""
+      cfg_set SERVER_HOST "$val" && log_ok "server host: ${val:-(cleared)}" ;;
+    server-ip)
+      need_root; lock_acquire
+      [[ "$val" == "auto" || -z "$val" ]] && val="$(detect_public_ipv4 || true)"
+      cfg_set SERVER_IP "$val" && log_ok "server IP: ${val:-(none)}" ;;
+    ssh-port)
+      need_root; lock_acquire
+      cfg_set SSH_PORT "$val" && log_ok "SSH port recorded: $val (this does not change sshd's own port)" ;;
+    udp-ports | udp-exclude | udp-port | run-as | firewall-mode)
+      need_root; lock_acquire
+      local ck old_lp
+      case "$key" in
+        udp-ports) ck=UDP_PORTS ;;
+        udp-exclude) ck=UDP_EXCLUDE; [[ "$val" == "none" ]] && val="" ;;
+        udp-port) ck=UDP_LISTEN_PORT ;;
+        run-as) ck=RUN_AS ;;
+        firewall-mode) ck=FIREWALL_MODE ;;
+      esac
+      old_lp="$(cfg_get UDP_LISTEN_PORT)"
+      if [[ "$ck" == UDP_LISTEN_PORT ]] && valid_port "$val" && [[ "$val" != "$old_lp" ]] &&
+        ss -H -lun 2>/dev/null | awk -v p=":$val" '$4 ~ p"$" { f = 1 } END { exit f ? 0 : 1 }'; then
+        die "UDP port $val is already in use"
+      fi
+      cfg_set "$ck" "$val" || return 1
+      if [[ "$ck" == UDP_LISTEN_PORT && "$val" != "$old_lp" ]]; then
+        fw_purge # drops the old listen-port UFW rule too
+      fi
+      apply_runtime && log_ok "$key updated and applied" ;;
+    default-maxlogins)
+      need_root; lock_acquire
+      cfg_set DEFAULT_MAXLOGINS "$val" && log_ok "default login limit: $val" ;;
+    *) die "unknown config key '$key' (see: sshudp help)" ;;
+  esac
+}
+
+# -------------------------------------------------------------------- logs --
+cmd_logs() {
+  local what="${1:-udp}" n=50 follow=0 a args=()
+  shift || true
+  while (($#)); do
+    case "$1" in
+      -f | --follow) follow=1 ;;
+      -n) shift; n="${1:-50}" ;;
+    esac
+    shift || true
+  done
+  [[ "$n" =~ ^[0-9]{1,5}$ ]] || die "invalid line count"
+  have journalctl || die "journalctl not available"
+  args=(--no-pager -n "$n")
+  ((follow)) && args=(-f -n "$n")
+  case "$what" in
+    udp) journalctl -u "$SVC_UDP" "${args[@]}" ;;
+    expiry) journalctl -u "$SVC_EXPIRY.service" "${args[@]}" ;;
+    events) journalctl -t sshudp "${args[@]}" ;;
+    all) journalctl -u "$SVC_UDP" -u "$SVC_FW" -u "$SVC_EXPIRY.service" -u "$SVC_LIMITER.service" -t sshudp "${args[@]}" ;;
+    *) die "logs: choose udp | expiry | events | all" ;;
+  esac
+}
+
+# ----------------------------------------------------------------- users ----
+_read_pw_stdin() { local p; IFS= read -r p || true; printf '%s' "$p"; }
+
+cmd_create_user() {
+  need_root
+  local name="" span="" pw="" gen=0 stdin_pw=0 lim=""
+  while (($#)); do
+    case "$1" in
+      --days) shift; span="${1:-}" ;;
+      --expires) shift; span="${1:-}" ;;
+      --limit) shift; lim="${1:-}" ;;
+      --generate) gen=1 ;;
+      --password-stdin) stdin_pw=1 ;;
+      --password | --pass) die "passwords are not accepted on the command line (visible in process lists); use --generate or --password-stdin" ;;
+      -*) die "unknown option: $1" ;;
+      *) [[ -z "$name" ]] && name="$1" || die "unexpected argument: $1" ;;
+    esac
+    shift || true
+  done
+  lock_acquire
+  if [[ -z "$name" && -z "$span" && "$gen" == 0 && "$stdin_pw" == 0 ]]; then
+    cmd_create_user_interactive
+    return
+  fi
+  [[ -n "$name" ]] || die "username required"
+  [[ -n "$span" ]] || span=30
+  if ((stdin_pw)); then pw="$(_read_pw_stdin)"; else gen=1; fi
+  ((gen)) && pw="$(gen_password)"
+  user_create "$name" "$pw" "$span" "$lim" || return 1
+  echo
+  client_show "$name" "$pw"
+}
+
+cmd_reset_password() {
+  need_root
+  local u="${1:-}" pw="" mode="${2:---generate}"
+  [[ -n "$u" ]] || die "username required"
+  lock_acquire
+  if [[ "$mode" == "--password-stdin" ]]; then pw="$(_read_pw_stdin)"; else pw="$(gen_password)"; fi
+  user_set_password "$u" "$pw" || return 1
+  echo
+  client_show "$u" "$pw"
+}
+
+cmd_fw() {
+  need_root
+  case "${1:-status}" in
+    status) fw_describe; echo; read -r rxp rxb txp txb < <(fw_stats); printf 'Counters: RX %s (%s pkts)  TX %s (%s pkts)\n' "$(human_bytes "$rxb")" "$rxp" "$(human_bytes "$txb")" "$txp" ;;
+    apply) lock_acquire; fw_apply && log_ok "firewall rules applied" ;;
+    remove) lock_acquire; fw_remove_runtime; log_ok "runtime redirect rules removed (UFW rule and config kept; 'sshudp fw apply' restores)" ;;
+    *) die "fw: status | apply | remove" ;;
+  esac
+}
+
+main() {
+  local cmd="${1:-}"
+  shift || true
+  case "$cmd" in
+    "")
+      if [[ -t 0 && -t 1 ]]; then need_root; ui_main_menu; else cmd_status; fi ;;
+    help | -h | --help) usage ;;
+    version | -v | --version) echo "sshudp $(sshudp_version) (core $(core_installed_version))" ;;
+    status) cmd_status ;;
+    doctor) doctor_run "$@" ;;
+    users) users_table "${1:-}" ;;
+    online) online_table ;;
+    traffic) traffic_report ;;
+    create-user) cmd_create_user "$@" ;;
+    delete-user)
+      need_root; lock_acquire
+      [[ -n "${1:-}" ]] || die "username required"
+      if [[ "${2:-}" != "--yes" ]]; then confirm "Delete '$1' permanently?" n || { log_info cancelled; exit 0; }; fi
+      user_delete "$1" && log_ok "deleted $1" ;;
+    renew-user)
+      need_root; lock_acquire
+      [[ -n "${1:-}" ]] || die "username required"
+      user_renew "$1" "${2:-30}" && log_ok "$1 now expires on $USER_CREATED_EXPIRES" ;;
+    lock-user) need_root; lock_acquire; user_lock "${1:-}" && log_ok "locked ${1:-}" ;;
+    unlock-user) need_root; lock_acquire; user_unlock "${1:-}" && log_ok "unlocked ${1:-}" ;;
+    reset-password) cmd_reset_password "$@" ;;
+    user-info) need_root; user_details "${1:-}" ;;
+    cleanup-expired) need_root; lock_acquire; cleanup_expired "$@" ;;
+    client) need_root; [[ -n "${1:-}" ]] || die "username required"; client_show "$1" ;;
+    config) cmd_config "$@" ;;
+    start) need_root; svc_start "$SVC_FW"; svc_start "$SVC_UDP" && log_ok "started" ;;
+    stop) need_root; svc_stop "$SVC_UDP"; svc_stop "$SVC_FW"; log_ok "stopped (SSH and other services untouched)" ;;
+    restart) need_root; svc_restart "$SVC_FW"; svc_restart "$SVC_UDP" && log_ok "restarted" ;;
+    logs) cmd_logs "$@" ;;
+    fw) cmd_fw "$@" ;;
+    udpgw)
+      case "${1:-status}" in
+        enable) udpgw_enable "${2:-}" ;;
+        disable) udpgw_disable ;;
+        status) udpgw_status ;;
+        *) die "udpgw: enable [port] | disable | status" ;;
+      esac ;;
+    fail2ban)
+      case "${1:-status}" in
+        enable) fail2ban_enable ;;
+        disable) fail2ban_disable ;;
+        status) fail2ban_status ;;
+        *) die "fail2ban: enable | disable | status" ;;
+      esac ;;
+    backup) need_root; lock_acquire; backup_create "$@" | sed 's/^/backup created: /' ;;
+    backups) need_root; backup_list ;;
+    restore)
+      need_root; lock_acquire
+      [[ -n "${1:-}" ]] || { backup_list; die "usage: sshudp restore FILE"; }
+      restore_run "$1" && apply_runtime && { echo; doctor_run --quick; } ;;
+    update) update_run "$@" ;;
+    core-update) core_update ;;
+    repair) lock_acquire; repair_run ;;
+    uninstall) uninstall_run "$@" ;;
+    # ---- internal entry points (systemd units / updater) ----
+    fw-apply) need_root; fw_apply ;;
+    fw-remove) need_root; fw_remove_runtime ;;
+    enforce-limits) need_root; enforce_limits ;;
+    _post-update) post_update "$@" ;;
+    _install) installer_main "$@" ;;
+    *) log_err "unknown command: $cmd"; usage; exit 2 ;;
+  esac
+}
+
+main "$@"
